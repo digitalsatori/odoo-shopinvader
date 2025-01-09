@@ -3,6 +3,7 @@
 # Copyright 2021 Camptocamp SA (http://www.camptocamp.com)
 # @author Simone Orsi <simahawk@gmail.com>
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
+from hashlib import sha1
 
 from odoo import fields, models
 
@@ -53,7 +54,11 @@ class ShopinvaderImageMixin(models.AbstractModel):
         self.ensure_one()
         if not self[self._image_field]:
             return False
-        return str(hash(self._get_images_store_hash_tuple()))
+        # NOTE : from python 3.9 on we should use
+        # usedforsecurity=False with sha1
+        return sha1(
+            str(self._get_images_store_hash_tuple()).encode("utf-8")
+        ).hexdigest()
 
     def _get_images_store_hash_timestamp(self):
         """Get the timestamp of the last modification of the images
@@ -63,12 +68,11 @@ class ShopinvaderImageMixin(models.AbstractModel):
         :return: datetime
         """
         images_relation = self[self._image_field]
-        timestamps = [
-            *images_relation.mapped("write_date"),
-            *images_relation.mapped("image_id.write_date"),
+        timestamps = [x.write_date for x in images_relation] + [
+            x.image_id.write_date for x in images_relation
         ]
         if "tag_id" in images_relation._fields:
-            timestamps += images_relation.mapped("tag_id.write_date")
+            timestamps += [x.tag_id.write_date for x in images_relation if x.tag_id]
         return max(timestamps) if timestamps else False
 
     def _get_images_store_hash_tuple(self):
@@ -81,7 +85,7 @@ class ShopinvaderImageMixin(models.AbstractModel):
         # NOTE: this is not perfect in terms of perf because it will cause
         # calls to `get_or_create_thumbnail` when no image data has changed
         # but it's better than having broken URLs.
-        public_urls = tuple(images.mapped("url"))
+        public_urls = tuple([self._get_image_url(x) for x in images])
         resize_scales = tuple(
             self._resize_scales().mapped(lambda r: (r.key, r.size_x, r.size_y))
         )
@@ -122,7 +126,11 @@ class ShopinvaderImageMixin(models.AbstractModel):
         :return: dict
         """
         self.ensure_one()
-        res = {"src": thumbnail.url, "alt": self.name}
+        res = {"src": self._get_image_url(thumbnail), "alt": self.name}
         if "tag_id" in image_relation._fields:
             res["tag"] = image_relation.tag_id.name or ""
         return res
+
+    def _get_image_url(self, image):
+        fname = "url" if self.backend_id.image_data_include_cdn_url else "url_path"
+        return image[fname]
